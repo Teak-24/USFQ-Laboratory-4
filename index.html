@@ -1,0 +1,484 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fleet Defense</title>
+<style>
+  :root{
+    --bg:#05060f; --panel:#0d1020; --line:#23284a; --text:#e6e9ff; --muted:#8087b5;
+    --p1:#38e8ff; --p2:#ff9f43; --good:#5cff8a; --bad:#ff5c7a;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:"Courier New",ui-monospace,monospace;min-height:100vh}
+  header{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+  h1{margin:0;font-size:20px;letter-spacing:4px;color:var(--p1);text-shadow:0 0 12px rgba(56,232,255,.5)}
+  #userbar{display:none;font-size:13px;color:var(--muted)}
+  #userbar b{color:var(--text)}
+  button{font:inherit;cursor:pointer;border:1px solid var(--p1);background:transparent;color:var(--p1);padding:9px 16px;border-radius:6px;letter-spacing:1px}
+  button:hover{background:rgba(56,232,255,.12)}
+  button.alt{border-color:var(--p2);color:var(--p2)}
+  button.alt:hover{background:rgba(255,159,67,.12)}
+  button.ghost{border-color:var(--line);color:var(--muted)}
+  input{font:inherit;background:#070914;color:var(--text);border:1px solid var(--line);border-radius:6px;padding:9px 10px;width:100%}
+  input:focus{outline:none;border-color:var(--p1)}
+  main{display:flex;gap:18px;justify-content:center;align-items:flex-start;padding:16px;flex-wrap:wrap}
+  #stage{position:relative;width:min(480px,96vw);aspect-ratio:480/640;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:#000;box-shadow:0 0 30px rgba(56,232,255,.08)}
+  canvas{width:100%;height:100%;display:block;touch-action:none}
+  #overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(5,6,15,.78);padding:16px}
+  #overlay.hide{display:none}
+  .panel{display:none;width:100%;max-width:340px;text-align:center}
+  .panel.on{display:block}
+  .panel h2{margin:0 0 6px;font-size:22px;letter-spacing:3px}
+  .panel p{color:var(--muted);font-size:13px;line-height:1.5;margin:6px 0 12px}
+  .stack{display:flex;flex-direction:column;gap:10px;margin-top:12px}
+  .row{display:flex;gap:8px}
+  .err{color:var(--bad);font-size:13px;min-height:18px;margin-top:8px}
+  .code{font-size:48px;letter-spacing:14px;color:var(--p2);margin:10px 0 4px;text-shadow:0 0 14px rgba(255,159,67,.5)}
+  .big{font-size:44px;color:var(--good);margin:4px 0}
+  aside{width:min(340px,96vw)}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin-bottom:14px}
+  .card h3{margin:0 0 8px;font-size:13px;letter-spacing:2px;color:var(--muted);font-weight:normal}
+  .best{font-size:22px;color:var(--good)}
+  ul{list-style:none;margin:0;padding:0}
+  li{display:flex;justify-content:space-between;gap:8px;font-size:13px;padding:4px 0;border-bottom:1px dashed #1a1e3a}
+  li:last-child{border-bottom:none}
+  li b{color:var(--p2)}
+  li.muted{color:var(--muted)}
+  .sub{color:var(--muted);font-size:11px}
+  .keys{font-size:12px;color:var(--muted);line-height:1.6}
+  #touch{display:none;position:absolute;left:0;right:0;bottom:6px;justify-content:space-between;padding:0 10px;pointer-events:none}
+  #touch button{pointer-events:auto;width:30%;padding:16px 0;font-size:18px;background:rgba(5,6,15,.6);user-select:none;-webkit-user-select:none}
+  @media (pointer:coarse){ #touch.on{display:flex} }
+</style>
+</head>
+<body>
+<header>
+  <h1>FLEET DEFENSE</h1>
+  <div id="userbar">Pilot: <b id="who"></b> &nbsp; <button class="ghost" id="btnLogout" style="padding:4px 10px">Sign out</button></div>
+</header>
+
+<main>
+  <section id="stage">
+    <canvas id="cv" width="480" height="640"></canvas>
+    <div id="touch"><button id="tL">◀</button><button id="tF" class="alt">FIRE</button><button id="tR">▶</button></div>
+
+    <div id="overlay">
+      <div class="panel" id="p-config">
+        <h2 style="color:var(--bad)">SETUP NEEDED</h2>
+        <p>Open <b>config.js</b> and paste your Supabase Project URL and publishable key, then reload.</p>
+      </div>
+
+      <div class="panel on" id="p-auth">
+        <h2>SIGN IN</h2>
+        <p>Use an account you created in Supabase (e.g. ana@prueba.com).</p>
+        <div class="stack">
+          <input id="email" type="email" placeholder="email" autocomplete="username">
+          <input id="password" type="password" placeholder="password" autocomplete="current-password">
+          <button id="btnLogin">ENTER</button>
+        </div>
+        <div class="err" id="authErr"></div>
+      </div>
+
+      <div class="panel" id="p-lobby">
+        <h2>READY, PILOT?</h2>
+        <p>Defend Earth together. The team keeps playing until <b>both</b> ships are destroyed.</p>
+        <div class="stack">
+          <button id="btnCreate">CREATE CO-OP ROOM</button>
+          <div class="row">
+            <input id="codeIn" maxlength="4" placeholder="CODE" style="text-transform:uppercase;text-align:center;letter-spacing:6px">
+            <button class="alt" id="btnJoin" style="white-space:nowrap">JOIN</button>
+          </div>
+          <button class="ghost" id="btnSolo">PLAY SOLO</button>
+        </div>
+        <div class="err" id="lobbyErr"></div>
+      </div>
+
+      <div class="panel" id="p-waithost">
+        <h2>ROOM CODE</h2>
+        <div class="code" id="roomCode">----</div>
+        <p id="waitStatus">Waiting for player 2…</p>
+        <p class="sub">You are P1 (cyan). Keep this tab visible while you play: you run the game.</p>
+        <div class="stack">
+          <button id="btnStart">START SOLO</button>
+          <button class="ghost" id="btnCancel">CANCEL</button>
+        </div>
+      </div>
+
+      <div class="panel" id="p-waitguest">
+        <h2>CONNECTED</h2>
+        <p id="guestInfo"></p>
+        <p class="sub">You are P2 (orange).</p>
+        <div class="stack"><button class="ghost" id="btnLeave">LEAVE</button></div>
+      </div>
+
+      <div class="panel" id="p-over">
+        <h2 style="color:var(--bad)">GAME OVER</h2>
+        <div class="big" id="overScore">0</div>
+        <p id="overInfo"></p>
+        <p id="saveStatus" class="sub"></p>
+        <div class="stack"><button id="btnBack">BACK TO LOBBY</button></div>
+      </div>
+    </div>
+  </section>
+
+  <aside>
+    <div class="card"><h3>YOUR BEST</h3><div class="best" id="myBest">–</div></div>
+    <div class="card"><h3>TOP RUNS</h3><ul id="topList"></ul></div>
+    <div class="card"><h3>LATEST RUNS (LIVE)</h3><ul id="recentList"></ul></div>
+    <div class="card keys">
+      <b>Controls</b><br>
+      Move: ← → or A D<br>
+      Fire: Space (hold)<br>
+      A dead ship comes back with 1 life when you clear a wave.
+    </div>
+  </aside>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="config.js"></script>
+<script src="sim.js"></script>
+<script>
+(function () {
+'use strict';
+const $ = id => document.getElementById(id);
+
+if (!window.SUPABASE_URL || window.SUPABASE_URL.includes('YOUR_') || !window.SUPABASE_KEY || window.SUPABASE_KEY.includes('YOUR_')) {
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('on'));
+  $('p-config').classList.add('on');
+  return;
+}
+
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY, { realtime: { params: { eventsPerSecond: 30 } } });
+
+// ---------- state ----------
+let me = null;
+let role = null;            // 'host' | 'guest' | null
+let mode = 'idle';          // 'idle' | 'play' | 'over'
+let ch = null, code = null, joinT = null, feedCh = null;
+let guest = null;           // host side: {email, lastSeen}
+let guestInput = { l: 0, r: 0, f: 0 };
+let sim = null, names = null, myIdx = 0, runKey = null;
+let lastNet = null, recvAt = 0, lastView = null;
+let disp = [null, null];
+let overDone = false, lastInputSent = '', lastSentAt = 0, tick = 0;
+
+const short = e => (e || '').split('@')[0];
+
+function show(id) {
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('on'));
+  if (id) $(id).classList.add('on');
+  $('overlay').classList.toggle('hide', !id);
+}
+
+// ---------- auth ----------
+$('btnLogin').onclick = async () => {
+  $('authErr').textContent = '';
+  const { error } = await sb.auth.signInWithPassword({ email: $('email').value.trim(), password: $('password').value });
+  if (error) $('authErr').textContent = error.message;
+};
+$('password').addEventListener('keydown', e => { if (e.key === 'Enter') $('btnLogin').click(); });
+$('btnLogout').onclick = () => sb.auth.signOut();
+
+sb.auth.onAuthStateChange((ev, sess) => {
+  const u = sess ? sess.user : null;
+  setTimeout(() => {
+    if (u && (!me || me.id !== u.id)) { me = u; onLogin(); }
+    else if (!u && me) { me = null; onLogout(); }
+    else if (u) me = u;
+  }, 0);
+});
+
+function onLogin() {
+  $('who').textContent = me.email;
+  $('userbar').style.display = 'block';
+  show('p-lobby');
+  loadBoards();
+  feedCh = sb.channel('runs-feed')
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'runs' }, () => loadBoards())
+    .subscribe();
+}
+function onLogout() {
+  leaveRoom(true);
+  if (feedCh) { sb.removeChannel(feedCh); feedCh = null; }
+  $('userbar').style.display = 'none';
+  $('password').value = '';
+  show('p-auth');
+}
+
+// ---------- leaderboards (data lives in Supabase) ----------
+function ago(iso) {
+  const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+  if (s < 60) return 'just now';
+  if (s < 3600) return Math.floor(s / 60) + 'm ago';
+  if (s < 86400) return Math.floor(s / 3600) + 'h ago';
+  return Math.floor(s / 86400) + 'd ago';
+}
+function who(r) { return r.partner_email ? short(r.email) + ' + ' + short(r.partner_email) : short(r.email); }
+function dedupe(rows) {            // both players of a co-op run save a row; show it once
+  const seen = new Set(), out = [];
+  for (const r of rows || []) {
+    if (r.run_key) { if (seen.has(r.run_key)) continue; seen.add(r.run_key); }
+    out.push(r);
+  }
+  return out;
+}
+function fill(ul, rows, right, sub) {
+  ul.replaceChildren();
+  if (!rows.length) { const li = document.createElement('li'); li.className = 'muted'; li.textContent = 'No runs yet'; ul.append(li); return; }
+  rows.forEach((r, i) => {
+    const li = document.createElement('li');
+    const l = document.createElement('span'); l.textContent = (sub === 'rank' ? '#' + (i + 1) + ' ' : '') + who(r);
+    const s = document.createElement('span');
+    const b = document.createElement('b'); b.textContent = r.score;
+    s.append(b);
+    const t = document.createElement('span'); t.className = 'sub'; t.textContent = ' ' + right(r);
+    s.append(t);
+    li.append(l, s); ul.append(li);
+  });
+}
+async function loadBoards() {
+  if (!me) return;
+  const [top, recent, mine] = await Promise.all([
+    sb.from('runs').select('*').order('score', { ascending: false }).limit(20),
+    sb.from('runs').select('*').order('created_at', { ascending: false }).limit(20),
+    sb.from('runs').select('score,wave').eq('user_id', me.id).order('score', { ascending: false }).limit(1),
+  ]);
+  if (top.data) fill($('topList'), dedupe(top.data).slice(0, 8), r => 'w' + r.wave, 'rank');
+  if (recent.data) fill($('recentList'), dedupe(recent.data).slice(0, 8), r => ago(r.created_at));
+  if (mine.data) $('myBest').textContent = mine.data.length ? mine.data[0].score + '  (wave ' + mine.data[0].wave + ')' : 'no runs yet';
+}
+async function saveRun(score, wave, partner) {
+  const { error } = await sb.from('runs').insert({
+    user_id: me.id, email: me.email, score, wave, partner_email: partner || null, run_key: partner ? runKey : null,
+  });
+  $('saveStatus').textContent = error ? 'Could not save: ' + error.message : 'Saved to the leaderboard ✓';
+  loadBoards();
+}
+
+// ---------- lobby / rooms (Supabase Realtime broadcast) ----------
+const bc = (event, payload) => ch && ch.send({ type: 'broadcast', event, payload });
+
+function genCode() {
+  const L = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+  return Array.from({ length: 4 }, () => L[Math.floor(Math.random() * L.length)]).join('');
+}
+
+function leaveRoom(silent) {
+  if (ch) { sb.removeChannel(ch); ch = null; }
+  clearTimeout(joinT);
+  role = null; mode = 'idle'; sim = null; guest = null; lastNet = null; lastView = null; code = null;
+  if (!silent && me) { show('p-lobby'); $('lobbyErr').textContent = ''; loadBoards(); }
+}
+
+$('btnCreate').onclick = () => {
+  leaveRoom(true);
+  role = 'host'; code = genCode(); guest = null;
+  ch = sb.channel('room:' + code, { config: { broadcast: { self: false } } });
+  ch.on('broadcast', { event: 'join' }, ({ payload }) => {
+      if (sim || (guest && guest.email !== payload.email)) return;
+      guest = { email: payload.email, lastSeen: performance.now() };
+      bc('welcome', { email: me.email });
+      updateWaiting();
+    })
+    .on('broadcast', { event: 'input' }, ({ payload }) => {
+      guestInput = payload;
+      if (guest) guest.lastSeen = performance.now();
+    })
+    .subscribe(st => { if (st === 'SUBSCRIBED') { $('roomCode').textContent = code; updateWaiting(); show('p-waithost'); } });
+};
+
+function updateWaiting() {
+  $('waitStatus').textContent = guest ? short(guest.email) + ' joined: co-op ready!' : 'Waiting for player 2… (or start solo)';
+  $('btnStart').textContent = guest ? 'START CO-OP' : 'START SOLO';
+}
+
+$('btnCancel').onclick = () => leaveRoom();
+$('btnLeave').onclick = () => leaveRoom();
+$('btnBack').onclick = () => leaveRoom();
+$('btnSolo').onclick = () => { leaveRoom(true); role = 'host'; guest = null; hostStart(); };
+$('btnStart').onclick = () => hostStart();
+
+$('btnJoin').onclick = () => {
+  const c = $('codeIn').value.trim().toUpperCase();
+  if (!/^[A-Z]{4}$/.test(c)) { $('lobbyErr').textContent = 'Enter the 4-letter room code.'; return; }
+  leaveRoom(true);
+  role = 'guest'; code = c;
+  let connected = false;
+  ch = sb.channel('room:' + c, { config: { broadcast: { self: false } } });
+  ch.on('broadcast', { event: 'welcome' }, ({ payload }) => {
+      connected = true; clearTimeout(joinT);
+      $('guestInfo').textContent = 'Connected to ' + short(payload.email) + '. Waiting for the host to start…';
+      show('p-waitguest');
+    })
+    .on('broadcast', { event: 'start' }, ({ payload }) => { names = payload.names; runKey = payload.runKey; myIdx = 1; beginPlay(); })
+    .on('broadcast', { event: 'state' }, ({ payload }) => { lastNet = payload; recvAt = performance.now(); })
+    .on('broadcast', { event: 'over' }, ({ payload }) => onGuestOver(payload))
+    .subscribe(st => { if (st === 'SUBSCRIBED') bc('join', { email: me.email }); });
+  $('lobbyErr').textContent = 'Joining…';
+  joinT = setTimeout(() => {
+    if (!connected) { leaveRoom(); $('lobbyErr').textContent = 'Room not found. Check the code and make sure the host created it.'; }
+  }, 5000);
+};
+
+function beginPlay() {
+  mode = 'play'; overDone = false; lastNet = null; lastView = null; disp = [null, null];
+  recvAt = performance.now(); lastInputSent = ''; tick = 0;
+  show(null);
+}
+
+function hostStart() {
+  const two = !!guest;
+  sim = newSim(two);
+  names = { host: me.email, guest: two ? guest.email : null };
+  runKey = code ? code + '-' + Date.now() : null;
+  myIdx = 0;
+  guestInput = { l: 0, r: 0, f: 0 };
+  if (two) { guest.lastSeen = performance.now(); bc('start', { names, runKey }); }
+  beginPlay();
+}
+
+function hostFinish() {
+  if (overDone) return;
+  overDone = true;
+  const p = { score: sim.score, wave: sim.wave, host: names.host, guest: names.guest };
+  const c = ch;
+  if (c && names.guest) [0, 300, 900].forEach(d => setTimeout(() => c.send({ type: 'broadcast', event: 'over', payload: p }), d));
+  showOver(p.score, p.wave, names.guest);
+  saveRun(p.score, p.wave, names.guest);
+}
+function onGuestOver(p) {
+  if (overDone) return;
+  overDone = true;
+  showOver(p.score, p.wave, p.host);
+  saveRun(p.score, p.wave, p.host);
+}
+function showOver(score, wave, partner) {
+  mode = 'over';
+  $('overScore').textContent = score;
+  $('overInfo').textContent = 'Reached wave ' + wave + ' · ' + (partner ? 'Team ' + short(me.email) + ' + ' + short(partner) : 'Solo run');
+  $('saveStatus').textContent = 'Saving…';
+  show('p-over');
+}
+
+// ---------- input ----------
+const keys = {}, touch = {};
+addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT') return;
+  keys[e.code] = true;
+  if (mode === 'play' && ['Space', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.code)) e.preventDefault();
+});
+addEventListener('keyup', e => { keys[e.code] = false; });
+addEventListener('blur', () => { for (const k in keys) keys[k] = false; });
+function getInput() {
+  return {
+    l: !!(keys.ArrowLeft || keys.KeyA || touch.l),
+    r: !!(keys.ArrowRight || keys.KeyD || touch.r),
+    f: !!(keys.Space || keys.ArrowUp || keys.KeyW || touch.f),
+  };
+}
+[['tL', 'l'], ['tR', 'r'], ['tF', 'f']].forEach(([id, k]) => {
+  const el = $(id);
+  el.addEventListener('pointerdown', e => { e.preventDefault(); touch[k] = true; });
+  ['pointerup', 'pointerleave', 'pointercancel'].forEach(ev => el.addEventListener(ev, () => { touch[k] = false; }));
+});
+function updateTouch() { $('touch').classList.toggle('on', mode === 'play'); }
+
+// ---------- drawing ----------
+const cv = $('cv'), g = cv.getContext('2d');
+const stars = Array.from({ length: 70 }, () => ({ x: Math.random() * W, y: Math.random() * H, s: 20 + Math.random() * 60, z: Math.random() < .3 ? 2 : 1 }));
+const SPR = [
+  ['#.......#', '.#.###.#.', '#########', '##.###.##', '#########', '.#.....#.', '#.......#'],
+  ['..#####..', '.#######.', '##.###.##', '#########', '.##...##.', '#.......#', '..#...#..'],
+  ['#.#...#.#', '#.#####.#', '#########', '##.###.##', '#########', '..#...#..', '.#.....#.'],
+];
+const ECOL = ['#5cff8a', '#ff5ccb', '#ffd25c'];
+const PCOL = ['#38e8ff', '#ff9f43'];
+
+function drawBg(dt) {
+  g.fillStyle = '#05060f'; g.fillRect(0, 0, W, H);
+  g.fillStyle = '#9fb4ff';
+  for (const s of stars) {
+    s.y += s.s * dt; if (s.y > H) { s.y = 0; s.x = Math.random() * W; }
+    g.globalAlpha = 0.35 + 0.2 * s.z; g.fillRect(s.x, s.y, s.z, s.z);
+  }
+  g.globalAlpha = 1;
+}
+function sprite(rows, x, y, k, col) {
+  g.fillStyle = col;
+  for (let r = 0; r < rows.length; r++)
+    for (let c = 0; c < rows[r].length; c++) if (rows[r][c] === '#') g.fillRect(Math.round(x + c * k), Math.round(y + r * k), k, k);
+}
+function ship(x, col, blink) {
+  if (blink && Math.floor(performance.now() / 80) % 2) return;
+  g.fillStyle = col;
+  g.beginPath();
+  g.moveTo(x, PY - 14); g.lineTo(x + 15, PY + 9); g.lineTo(x + 6, PY + 4); g.lineTo(x - 6, PY + 4); g.lineTo(x - 15, PY + 9);
+  g.closePath(); g.fill();
+  g.fillStyle = '#05060f'; g.fillRect(x - 2, PY - 2, 4, 6);
+}
+function drawView(v) {
+  for (const e of v.en) sprite(SPR[e.t], e.x, e.y, 3, ECOL[e.t]);
+  g.fillStyle = '#ffffff';
+  for (const b of v.b) g.fillRect(b.x - 1.5, b.y, 3, 10);
+  g.fillStyle = '#ff5c7a';
+  for (const b of v.eb) g.fillRect(b.x - 1.5, b.y, 3, 10);
+  v.pl.forEach((p, i) => { if (p && p.alive) ship(p.x, PCOL[i], p.inv); });
+
+  g.font = 'bold 16px "Courier New", monospace';
+  g.textBaseline = 'alphabetic';
+  g.fillStyle = '#e6e9ff'; g.textAlign = 'left'; g.fillText('SCORE ' + v.sc, 12, 24);
+  g.textAlign = 'right'; g.fillText('WAVE ' + v.wv, W - 12, 24);
+  v.pl.forEach((p, i) => {
+    if (!p) return;
+    g.fillStyle = PCOL[i];
+    g.textAlign = i === 0 ? 'left' : 'right';
+    const label = 'P' + (i + 1) + (i === myIdx ? '*' : '') + ' ' + (p.alive ? '♥'.repeat(p.lives) : 'DOWN');
+    g.fillText(label, i === 0 ? 12 : W - 12, H - 10);
+  });
+  if (v.ph === 'wave') {
+    g.fillStyle = '#5cff8a'; g.textAlign = 'center'; g.font = 'bold 36px "Courier New", monospace';
+    g.fillText('WAVE ' + v.wv, W / 2, H / 2);
+  }
+}
+
+// ---------- main loop ----------
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  drawBg(dt);
+
+  if (mode === 'play' && role === 'host' && sim) {
+    sim.players[0].input = getInput();
+    sim.players[1].input = guestInput;
+    if (guest && sim.players[1].alive && now - guest.lastSeen > 5000) { sim.players[1].alive = false; sim.players[1].lives = 0; }
+    stepSim(sim, dt);
+    const n = netSnap(sim);
+    if (ch && guest && ++tick % 3 === 0) bc('state', n);   // ~20 updates per second
+    lastView = viewFrom(n, 0);
+    if (sim.phase === 'over') hostFinish();
+  } else if (mode === 'play' && role === 'guest') {
+    if (lastNet) {
+      const v = viewFrom(lastNet, Math.min(0.15, (now - recvAt) / 1000));
+      v.pl.forEach((p, i) => {
+        if (!p) return;
+        disp[i] = disp[i] == null ? p.x : disp[i] + (p.x - disp[i]) * Math.min(1, dt * 18);
+        p.x = disp[i];
+      });
+      lastView = v;
+    }
+    const inp = getInput();
+    const key = '' + (inp.l | 0) + (inp.r | 0) + (inp.f | 0);
+    if (ch && (key !== lastInputSent || now - lastSentAt > 250)) { bc('input', inp); lastInputSent = key; lastSentAt = now; }
+    if (now - recvAt > 4000) { leaveRoom(); $('lobbyErr').textContent = 'Lost connection to the host.'; }
+  }
+
+  if (lastView && mode !== 'idle') drawView(lastView);
+  updateTouch();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
