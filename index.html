@@ -50,6 +50,26 @@
   #touch{display:none;position:absolute;left:0;right:0;bottom:6px;justify-content:space-between;padding:0 10px;pointer-events:none}
   #touch button{pointer-events:auto;width:30%;padding:16px 0;font-size:18px;background:rgba(5,6,15,.6);user-select:none;-webkit-user-select:none}
   @media (pointer:coarse){ #touch.on{display:flex} }
+  #overlay{overflow:auto}
+  .panel{margin:auto}
+  .toast{position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:50;display:none;background:var(--panel);border:1px solid var(--p2);border-radius:8px;padding:12px 14px;width:min(420px,94vw);text-align:center;font-size:13px;box-shadow:0 0 24px rgba(255,159,67,.35)}
+  .toast.on{display:block}
+  .toast .row{justify-content:center;margin-top:10px}
+  .online{margin-top:16px;text-align:left}
+  .online h4{margin:0 0 6px;font-size:11px;letter-spacing:2px;color:var(--muted);font-weight:normal}
+  .online li{align-items:center}
+  .online button{padding:3px 10px;font-size:12px}
+  .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;background:var(--good)}
+  .dot.busy{background:var(--p2)}
+  .note{color:var(--p2);font-size:13px;min-height:18px;margin:6px 0}
+  details{border-bottom:1px dashed #1a1e3a;padding:5px 0}
+  details:last-child{border-bottom:none}
+  summary{cursor:pointer;display:flex;justify-content:space-between;gap:8px;font-size:13px;list-style:none}
+  summary::-webkit-details-marker{display:none}
+  summary::before{content:'\25B8';color:var(--muted);margin-right:6px}
+  details[open] summary::before{content:'\25BE'}
+  summary .name{flex:1;color:var(--text)}
+  details ul{margin:6px 0 2px 14px}
 </style>
 </head>
 <body>
@@ -57,6 +77,11 @@
   <h1>FLEET DEFENSE</h1>
   <div id="userbar">Pilot: <b id="who"></b> &nbsp; <button class="ghost" id="btnLogout" style="padding:4px 10px">Sign out</button></div>
 </header>
+
+<div class="toast" id="inviteToast" role="alert">
+  <span id="inviteText"></span>
+  <div class="row"><button class="alt" id="invAccept">ACCEPT</button><button class="ghost" id="invDecline">DECLINE</button></div>
+</div>
 
 <main>
   <section id="stage">
@@ -91,12 +116,14 @@
           </div>
           <button class="ghost" id="btnSolo">PLAY SOLO</button>
         </div>
+        <div class="online"><h4>ONLINE NOW</h4><ul id="onlineList"></ul></div>
         <div class="err" id="lobbyErr"></div>
       </div>
 
       <div class="panel" id="p-waithost">
         <h2>ROOM CODE</h2>
         <div class="code" id="roomCode">----</div>
+        <div class="note" id="inviteNote"></div>
         <p id="waitStatus">Waiting for player 2…</p>
         <p class="sub">You are P1 (cyan). Keep this tab visible while you play: you run the game.</p>
         <div class="stack">
@@ -124,6 +151,7 @@
 
   <aside>
     <div class="card"><h3>YOUR BEST</h3><div class="best" id="myBest">–</div></div>
+    <div class="card"><h3>MY HISTORY WITH PARTNERS</h3><div id="histList"></div></div>
     <div class="card"><h3>TOP RUNS</h3><ul id="topList"></ul></div>
     <div class="card"><h3>LATEST RUNS (LIVE)</h3><ul id="recentList"></ul></div>
     <div class="card keys">
@@ -162,6 +190,7 @@ let sim = null, names = null, myIdx = 0, runKey = null;
 let lastNet = null, recvAt = 0, lastView = null;
 let disp = [null, null];
 let overDone = false, lastInputSent = '', lastSentAt = 0, tick = 0;
+let lobbyCh = null, lobbyReady = false, lastStatus = null, pendingInvite = null, outInvite = null;
 
 const short = e => (e || '').split('@')[0];
 
@@ -194,12 +223,14 @@ function onLogin() {
   $('userbar').style.display = 'block';
   show('p-lobby');
   loadBoards();
+  startLobby();
   feedCh = sb.channel('runs-feed')
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'runs' }, () => loadBoards())
     .subscribe();
 }
 function onLogout() {
   leaveRoom(true);
+  stopLobby();
   if (feedCh) { sb.removeChannel(feedCh); feedCh = null; }
   $('userbar').style.display = 'none';
   $('password').value = '';
@@ -242,11 +273,48 @@ async function loadBoards() {
   const [top, recent, mine] = await Promise.all([
     sb.from('runs').select('*').order('score', { ascending: false }).limit(20),
     sb.from('runs').select('*').order('created_at', { ascending: false }).limit(20),
-    sb.from('runs').select('score,wave').eq('user_id', me.id).order('score', { ascending: false }).limit(1),
+    sb.from('runs').select('*').eq('user_id', me.id).order('created_at', { ascending: false }).limit(300),
   ]);
   if (top.data) fill($('topList'), dedupe(top.data).slice(0, 8), r => 'w' + r.wave, 'rank');
   if (recent.data) fill($('recentList'), dedupe(recent.data).slice(0, 8), r => ago(r.created_at));
-  if (mine.data) $('myBest').textContent = mine.data.length ? mine.data[0].score + '  (wave ' + mine.data[0].wave + ')' : 'no runs yet';
+  if (mine.data) {
+    const best = mine.data.reduce((a, r) => (!a || r.score > a.score ? r : a), null);
+    $('myBest').textContent = best ? best.score + '  (wave ' + best.wave + ')' : 'no runs yet';
+    renderHistory(mine.data);
+  }
+}
+
+// My history, grouped by partner (rows are my own runs, newest first)
+function renderHistory(rows) {
+  const box = $('histList');
+  box.replaceChildren();
+  if (!rows.length) {
+    const p = document.createElement('div'); p.className = 'sub'; p.textContent = 'No runs yet. Play one!';
+    box.append(p); return;
+  }
+  const groups = new Map();
+  for (const r of rows) {
+    const k = r.partner_email || '';
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(r);
+  }
+  const list = [...groups.entries()].sort((a, b) => new Date(b[1][0].created_at) - new Date(a[1][0].created_at));
+  for (const [k, runs] of list) {
+    const d = document.createElement('details');
+    const s = document.createElement('summary');
+    const name = document.createElement('span'); name.className = 'name'; name.textContent = k ? short(k) : 'Solo';
+    const info = document.createElement('span'); info.className = 'sub';
+    info.textContent = runs.length + (runs.length === 1 ? ' game' : ' games') + ' · best ' + Math.max(...runs.map(r => r.score));
+    s.append(name, info); d.append(s);
+    const ul = document.createElement('ul');
+    runs.slice(0, 10).forEach(r => {
+      const li = document.createElement('li');
+      const l = document.createElement('span'); l.textContent = 'wave ' + r.wave + ' · ' + ago(r.created_at);
+      const b = document.createElement('b'); b.textContent = r.score;
+      li.append(l, b); ul.append(li);
+    });
+    d.append(ul); box.append(d);
+  }
 }
 async function saveRun(score, wave, partner) {
   const { error } = await sb.from('runs').insert({
@@ -265,19 +333,22 @@ function genCode() {
 }
 
 function leaveRoom(silent) {
+  cancelOut();
   if (ch) { sb.removeChannel(ch); ch = null; }
   clearTimeout(joinT);
   role = null; mode = 'idle'; sim = null; guest = null; lastNet = null; lastView = null; code = null;
   if (!silent && me) { show('p-lobby'); $('lobbyErr').textContent = ''; loadBoards(); }
+  renderOnline();
 }
 
-$('btnCreate').onclick = () => {
+function createRoom(onReady) {
   leaveRoom(true);
   role = 'host'; code = genCode(); guest = null;
   ch = sb.channel('room:' + code, { config: { broadcast: { self: false } } });
   ch.on('broadcast', { event: 'join' }, ({ payload }) => {
       if (sim || (guest && guest.email !== payload.email)) return;
       guest = { email: payload.email, lastSeen: performance.now() };
+      if (outInvite) { clearTimeout(outInvite.timer); outInvite = null; }
       bc('welcome', { email: me.email });
       updateWaiting();
     })
@@ -285,8 +356,15 @@ $('btnCreate').onclick = () => {
       guestInput = payload;
       if (guest) guest.lastSeen = performance.now();
     })
-    .subscribe(st => { if (st === 'SUBSCRIBED') { $('roomCode').textContent = code; updateWaiting(); show('p-waithost'); } });
-};
+    .subscribe(st => {
+      if (st === 'SUBSCRIBED') {
+        $('roomCode').textContent = code; $('inviteNote').textContent = '';
+        updateWaiting(); show('p-waithost');
+        if (onReady) onReady(code);
+      }
+    });
+}
+$('btnCreate').onclick = () => createRoom();
 
 function updateWaiting() {
   $('waitStatus').textContent = guest ? short(guest.email) + ' joined: co-op ready!' : 'Waiting for player 2… (or start solo)';
@@ -299,8 +377,10 @@ $('btnBack').onclick = () => leaveRoom();
 $('btnSolo').onclick = () => { leaveRoom(true); role = 'host'; guest = null; hostStart(); };
 $('btnStart').onclick = () => hostStart();
 
-$('btnJoin').onclick = () => {
-  const c = $('codeIn').value.trim().toUpperCase();
+$('btnJoin').onclick = () => joinRoom($('codeIn').value);
+
+function joinRoom(c) {
+  c = c.trim().toUpperCase();
   if (!/^[A-Z]{4}$/.test(c)) { $('lobbyErr').textContent = 'Enter the 4-letter room code.'; return; }
   leaveRoom(true);
   role = 'guest'; code = c;
@@ -319,7 +399,7 @@ $('btnJoin').onclick = () => {
   joinT = setTimeout(() => {
     if (!connected) { leaveRoom(); $('lobbyErr').textContent = 'Room not found. Check the code and make sure the host created it.'; }
   }, 5000);
-};
+}
 
 function beginPlay() {
   mode = 'play'; overDone = false; lastNet = null; lastView = null; disp = [null, null];
@@ -360,6 +440,126 @@ function showOver(score, wave, partner) {
   $('saveStatus').textContent = 'Saving…';
   show('p-over');
 }
+
+// ---------- lobby: who is online + invitations (Realtime presence + broadcast) ----------
+const myStatus = () => (role ? 'busy' : 'lobby');
+function trackMe() {
+  if (!lobbyCh || !lobbyReady) return;
+  lastStatus = myStatus();
+  lobbyCh.track({ id: me.id, email: me.email, status: lastStatus });
+}
+setInterval(() => { if (lobbyCh && lobbyReady && myStatus() !== lastStatus) trackMe(); }, 700);
+
+function startLobby() {
+  stopLobby();
+  lobbyCh = sb.channel('lobby', { config: { presence: { key: me.id }, broadcast: { self: false } } });
+  lobbyCh
+    .on('presence', { event: 'sync' }, renderOnline)
+    .on('broadcast', { event: 'invite' }, ({ payload }) => onInvite(payload))
+    .on('broadcast', { event: 'invite-reply' }, ({ payload }) => onInviteReply(payload))
+    .on('broadcast', { event: 'invite-cancel' }, ({ payload }) => onInviteCancel(payload))
+    .subscribe(st => { if (st === 'SUBSCRIBED') { lobbyReady = true; trackMe(); } });
+}
+function stopLobby() {
+  if (lobbyCh) { sb.removeChannel(lobbyCh); lobbyCh = null; }
+  lobbyReady = false; lastStatus = null;
+  if (pendingInvite) { clearTimeout(pendingInvite.timer); pendingInvite = null; }
+  $('inviteToast').classList.remove('on');
+  renderOnline();
+}
+
+function renderOnline() {
+  const ul = $('onlineList');
+  ul.replaceChildren();
+  const list = [];
+  if (lobbyCh && me) {
+    const st = lobbyCh.presenceState();
+    for (const k in st) {
+      if (k === me.id) continue;
+      const m = st[k][st[k].length - 1];
+      if (m && m.email) list.push(m);
+    }
+  }
+  list.sort((a, b) => a.email.localeCompare(b.email));
+  if (!list.length) {
+    const li = document.createElement('li'); li.className = 'muted'; li.textContent = 'Nobody else is online';
+    ul.append(li); return;
+  }
+  for (const m of list) {
+    const li = document.createElement('li');
+    const l = document.createElement('span');
+    const dot = document.createElement('span'); dot.className = 'dot' + (m.status === 'lobby' ? '' : ' busy');
+    l.append(dot, short(m.email) + (m.status === 'lobby' ? '' : ' (in a game)'));
+    li.append(l);
+    if (m.status === 'lobby') {
+      const b = document.createElement('button'); b.textContent = 'INVITE';
+      b.onclick = () => sendInvite(m);
+      li.append(b);
+    }
+    ul.append(li);
+  }
+}
+
+// Player A invites player B: A opens a room and tells B the code over the lobby channel
+function sendInvite(m) {
+  if (role || !lobbyCh) return;
+  if (!lobbyReady) { $('lobbyErr').textContent = 'Connecting… try again in a second.'; return; }
+  createRoom(c => {
+    outInvite = { id: m.id, email: m.email };
+    lobbyCh.send({ type: 'broadcast', event: 'invite', payload: { to: m.id, from: me.id, email: me.email, code: c } });
+    $('inviteNote').textContent = 'Invitation sent to ' + short(m.email) + '… waiting for a reply';
+    outInvite.timer = setTimeout(() => {
+      if (outInvite && !guest) { $('inviteNote').textContent = short(m.email) + ' did not answer.'; cancelOut(); }
+    }, 30000);
+  });
+}
+function cancelOut() {
+  if (!outInvite) return;
+  clearTimeout(outInvite.timer);
+  if (lobbyCh) lobbyCh.send({ type: 'broadcast', event: 'invite-cancel', payload: { to: outInvite.id, from: me.id } });
+  outInvite = null;
+}
+// B answered (accepted / declined / busy): A sees it right away
+function onInviteReply(p) {
+  if (p.to !== me.id || !outInvite || outInvite.id !== p.from) return;
+  clearTimeout(outInvite.timer);
+  const n = short(p.email);
+  if (p.answer === 'accepted') { $('inviteNote').textContent = n + ' accepted ✓ joining…'; }
+  else {
+    $('inviteNote').textContent = n + (p.answer === 'busy' ? ' is busy right now.' : ' declined the invitation.');
+    outInvite = null;
+  }
+}
+
+// Player B receives an invitation: a banner appears without reloading
+function onInvite(p) {
+  if (p.to !== me.id) return;
+  const reply = answer => lobbyCh && lobbyCh.send({ type: 'broadcast', event: 'invite-reply', payload: { to: p.from, from: me.id, email: me.email, answer } });
+  if (role || pendingInvite) { reply('busy'); return; }
+  pendingInvite = p;
+  $('inviteText').textContent = short(p.email) + ' invites you to a co-op run!';
+  $('inviteToast').classList.add('on');
+  p.timer = setTimeout(() => clearInvite(), 30000);
+}
+function clearInvite() {
+  if (pendingInvite) clearTimeout(pendingInvite.timer);
+  pendingInvite = null;
+  $('inviteToast').classList.remove('on');
+}
+function onInviteCancel(p) {
+  if (pendingInvite && p.to === me.id && p.from === pendingInvite.from) clearInvite();
+}
+$('invAccept').onclick = () => {
+  const p = pendingInvite; if (!p) return;
+  clearInvite();
+  lobbyCh.send({ type: 'broadcast', event: 'invite-reply', payload: { to: p.from, from: me.id, email: me.email, answer: 'accepted' } });
+  joinRoom(p.code);
+};
+$('invDecline').onclick = () => {
+  const p = pendingInvite; if (!p) return;
+  clearInvite();
+  lobbyCh.send({ type: 'broadcast', event: 'invite-reply', payload: { to: p.from, from: me.id, email: me.email, answer: 'declined' } });
+};
 
 // ---------- input ----------
 const keys = {}, touch = {};
